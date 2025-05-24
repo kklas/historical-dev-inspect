@@ -27,6 +27,7 @@ pub enum StoreError {
     DbError(#[from] HistoricalDbError),
 }
 
+#[derive(Debug)]
 pub enum HistoricalPoint {
     BeforeCheckpoint(u64),
     AfterCheckpoint(u64),
@@ -273,27 +274,6 @@ impl HistoricalView {
             .collect()
     }
 
-    fn find_object_lt_or_eq_version(
-        &self,
-        object_id: ObjectID,
-        version: SequenceNumber,
-    ) -> Option<Object> {
-        // Use the latest version at the current point in time as an upper bound
-        let max_version = self.object_version_lte_latest_at_point(object_id, version)?;
-        let version = version.min(max_version);
-
-        self.db
-            .get_object_lt_or_eq_version(object_id, version)
-            .expect("db error")
-            .and_then(|wrapper| match wrapper {
-                StoreObjectWrapper::V1(StoreObjectV1::Value(obj_value)) => Some(
-                    try_construct_object(&ObjectKey(object_id, version), obj_value)
-                        .expect("object construction error"),
-                ),
-                _ => None,
-            })
-    }
-
     pub fn have_received_object_at_version(
         &self,
         object_key: FullObjectKey,
@@ -379,11 +359,39 @@ impl ChildObjectResolver for HistoricalView {
         child: &ObjectID,
         child_version_upper_bound: SequenceNumber,
     ) -> SuiResult<Option<Object>> {
-        let Some(child_object) =
-            self.find_object_lt_or_eq_version(*child, child_version_upper_bound)
-        else {
+        let (checkpoint_seq_num, tx_seq_num) =
+            if let Some((checkpoint_seq_num, tx_seq_num)) = self.get_lte_tx_args() {
+                (checkpoint_seq_num, tx_seq_num)
+            } else {
+                return Ok(None);
+            };
+
+        let max_version_at_point = self
+            .db
+            .get_highest_object_version_lte_tx(*child, checkpoint_seq_num, tx_seq_num)
+            .map_err(|e| SuiError::Storage(e.to_string()))?;
+
+        if max_version_at_point.is_none() {
             return Ok(None);
-        };
+        }
+        let max_version_at_point = max_version_at_point.unwrap();
+
+        let max_version = max_version_at_point.min(child_version_upper_bound);
+        let child_object = self
+            .db
+            .get_object_lt_or_eq_version(*child, max_version)
+            .map_err(|e| SuiError::Storage(e.to_string()))?
+            .and_then(|wrapper| match wrapper {
+                StoreObjectWrapper::V1(StoreObjectV1::Value(obj_value)) => Some(
+                    try_construct_object(&ObjectKey(*child, max_version), obj_value)
+                        .expect("object construction error"),
+                ),
+                _ => None,
+            });
+        if child_object.is_none() {
+            return Ok(None);
+        }
+        let child_object = child_object.unwrap();
 
         let parent = *parent;
         if child_object.owner != Owner::ObjectOwner(parent.into()) {
