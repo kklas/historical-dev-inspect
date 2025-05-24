@@ -1,0 +1,4 @@
+dist/
+dist-docker/
+node_modules/
+tsconfig.tsbuildinfo
