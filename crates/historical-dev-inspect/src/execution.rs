@@ -22,7 +22,8 @@ use sui_types::{
     },
 };
 
-use crate::store::HistoricalView;
+use sui_types::storage::{BackingPackageStore, ChildObjectResolver, ObjectStore, ParentSync};
+
 use crate::transaction_input_loader::read_objects_for_signing;
 
 const DEV_INSPECT_GAS_COIN_VALUE: u64 = 1_000_000_000_000_000;
@@ -44,7 +45,7 @@ impl From<&SuiSystemState> for EpochInfo {
 }
 
 pub fn dev_inspect_transaction(
-    store: &HistoricalView,
+    store: &(impl ObjectStore + ChildObjectResolver + BackingPackageStore + ParentSync),
     transaction_kind: &TransactionKind,
     sender: SuiAddress,
     epoch_info: EpochInfo,

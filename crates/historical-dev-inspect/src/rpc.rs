@@ -13,9 +13,14 @@ use serde::{Deserialize, Serialize};
 use sui_json_rpc_types::DevInspectResults;
 use sui_protocol_config::{Chain, ProtocolConfig};
 use sui_types::{
-    base_types::SuiAddress, digests::TransactionDigest, error::SuiError,
-    inner_temporary_store::PackageStoreWithFallback, sui_serde::BigInt,
-    sui_system_state::SuiSystemStateTrait,
+    base_types::SuiAddress,
+    digests::TransactionDigest,
+    error::SuiError,
+    inner_temporary_store::PackageStoreWithFallback,
+    storage::{BackingPackageStore, ChildObjectResolver, ObjectStore, ParentSync},
+    sui_serde::BigInt,
+    sui_system_state::{get_sui_system_state, SuiSystemStateTrait},
+    transaction::TransactionKind,
 };
 use thiserror::Error;
 
@@ -116,7 +121,7 @@ fn handle_historical_dev_inspect(
     db: Arc<HistoricalDb>,
     data: HistoricalDevInspectRequest,
 ) -> Result<Json<DevInspectResults>, ApiError> {
-    let transaction_kind = bcs::from_bytes(
+    let transaction_kind: TransactionKind = bcs::from_bytes(
         &data
             .tx_bytes
             .to_vec()
@@ -143,15 +148,26 @@ fn handle_historical_dev_inspect(
 
     let store = HistoricalView::new(db, historical_point)?;
 
-    let system_state = store.get_sui_system_state()?;
+    run_dev_inspect(store, &transaction_kind, data.sender_address)
+}
+
+pub fn run_dev_inspect<S>(
+    store: S,
+    transaction_kind: &TransactionKind,
+    sender_address: SuiAddress,
+) -> Result<Json<DevInspectResults>, ApiError>
+where
+    S: ObjectStore + ChildObjectResolver + BackingPackageStore + ParentSync,
+{
+    let system_state = get_sui_system_state(&store)?;
 
     let protocol_config =
         ProtocolConfig::get_for_version(system_state.protocol_version().into(), Chain::Mainnet);
 
     let (inner_store, _gas_status, effects, execution_results) = dev_inspect_transaction(
         &store,
-        &transaction_kind,
-        data.sender_address,
+        transaction_kind,
+        sender_address,
         EpochInfo::from(&system_state),
         &protocol_config,
     )?;

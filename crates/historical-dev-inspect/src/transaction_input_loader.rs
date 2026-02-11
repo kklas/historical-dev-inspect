@@ -2,16 +2,16 @@ use sui_types::{
     base_types::ObjectRef,
     committee::EpochId,
     error::{SuiError, SuiResult, UserInputError},
+    object::Object,
+    storage::{BackingPackageStore, ObjectStore},
     transaction::{
         InputObjectKind, InputObjects, ObjectReadResult, ObjectReadResultKind,
         ReceivingObjectReadResult, ReceivingObjects,
     },
 };
 
-use crate::store::HistoricalView;
-
 pub fn read_objects_for_signing(
-    store: &HistoricalView,
+    store: &(impl ObjectStore + BackingPackageStore),
     input_object_kinds: &[InputObjectKind],
     receiving_objects: &[ObjectRef],
     epoch_id: EpochId,
@@ -66,7 +66,7 @@ pub fn read_objects_for_signing(
         }
     }
 
-    let objects = store.multi_get_objects_with_more_accurate_error_return(&object_refs)?;
+    let objects = multi_get_objects_with_more_accurate_error_return(store, &object_refs)?;
     assert_eq!(objects.len(), object_refs.len());
     for (index, object) in fetch_indices.into_iter().zip(objects.into_iter()) {
         input_results[index] = Some(ObjectReadResult {
@@ -87,8 +87,59 @@ pub fn read_objects_for_signing(
     ))
 }
 
+/// Load a list of objects from the store by object reference.
+/// If they exist in the store, they are returned directly.
+/// If any object missing, we try to figure out the best error to return.
+/// If the object we are asking is currently locked at a future version, we know this
+/// transaction is out-of-date and we return a ObjectVersionUnavailableForConsumption,
+/// which indicates this is not retriable.
+/// Otherwise, we return a ObjectNotFound error, which indicates this is retriable.
+pub fn multi_get_objects_with_more_accurate_error_return(
+    store: &impl ObjectStore,
+    object_refs: &[ObjectRef],
+) -> Result<Vec<Object>, SuiError> {
+    let objects: Vec<Option<Object>> = object_refs
+        .iter()
+        .map(|r| store.get_object_by_key(&r.0, r.1))
+        .collect();
+    let mut result = Vec::new();
+    for (object_opt, object_ref) in objects.into_iter().zip(object_refs) {
+        match object_opt {
+            None => {
+                let live_objref = match store.get_object(&object_ref.0) {
+                    Some(obj) => obj.compute_object_reference(),
+                    None => {
+                        return Err(UserInputError::ObjectNotFound {
+                            object_id: object_ref.0,
+                            version: None,
+                        }
+                        .into());
+                    }
+                };
+                let error: UserInputError = if live_objref.1 >= object_ref.1 {
+                    UserInputError::ObjectVersionUnavailableForConsumption {
+                        provided_obj_ref: *object_ref,
+                        current_version: live_objref.1,
+                    }
+                } else {
+                    UserInputError::ObjectNotFound {
+                        object_id: object_ref.0,
+                        version: Some(object_ref.1),
+                    }
+                };
+                return Err(error.into());
+            }
+            Some(object) => {
+                result.push(object);
+            }
+        }
+    }
+    assert_eq!(result.len(), object_refs.len());
+    Ok(result)
+}
+
 pub fn read_receiving_objects_for_signing(
-    store: &HistoricalView,
+    store: &impl ObjectStore,
     receiving_objects: &[ObjectRef],
     _epoch_id: EpochId,
 ) -> SuiResult<ReceivingObjects> {

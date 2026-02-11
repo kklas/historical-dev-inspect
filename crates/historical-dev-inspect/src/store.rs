@@ -266,13 +266,6 @@ impl HistoricalView {
             })
     }
 
-    fn multi_get_objects_by_key(&self, object_keys: &[ObjectKey]) -> Vec<Option<Object>> {
-        object_keys
-            .iter()
-            .map(|object_key| self.get_object_by_key(&object_key.0, object_key.1))
-            .collect()
-    }
-
     pub fn have_received_object_at_version(
         &self,
         object_key: FullObjectKey,
@@ -292,57 +285,6 @@ impl HistoricalView {
         self.db
             .have_received_object_at_version(object_id, version)
             .expect("db error")
-    }
-
-    fn get_live_objref(&self, object_id: ObjectID) -> SuiResult<ObjectRef> {
-        match self.get_object(&object_id) {
-            Some(obj) => Ok(obj.compute_object_reference()),
-            None => Err(UserInputError::ObjectNotFound {
-                object_id,
-                version: None,
-            }
-            .into()),
-        }
-    }
-
-    /// Load a list of objects from the store by object reference.
-    /// If they exist in the store, they are returned directly.
-    /// If any object missing, we try to figure out the best error to return.
-    /// If the object we are asking is currently locked at a future version, we know this
-    /// transaction is out-of-date and we return a ObjectVersionUnavailableForConsumption,
-    /// which indicates this is not retriable.
-    /// Otherwise, we return a ObjectNotFound error, which indicates this is retriable.
-    pub fn multi_get_objects_with_more_accurate_error_return(
-        &self,
-        object_refs: &[ObjectRef],
-    ) -> Result<Vec<Object>, SuiError> {
-        let objects = self
-            .multi_get_objects_by_key(&object_refs.iter().map(ObjectKey::from).collect::<Vec<_>>());
-        let mut result = Vec::new();
-        for (object_opt, object_ref) in objects.into_iter().zip(object_refs) {
-            match object_opt {
-                None => {
-                    let live_objref = self.get_live_objref(object_ref.0)?;
-                    let error: UserInputError = if live_objref.1 >= object_ref.1 {
-                        UserInputError::ObjectVersionUnavailableForConsumption {
-                            provided_obj_ref: *object_ref,
-                            current_version: live_objref.1,
-                        }
-                    } else {
-                        UserInputError::ObjectNotFound {
-                            object_id: object_ref.0,
-                            version: Some(object_ref.1),
-                        }
-                    };
-                    return Err(error.into());
-                }
-                Some(object) => {
-                    result.push(object);
-                }
-            }
-        }
-        assert_eq!(result.len(), object_refs.len());
-        Ok(result)
     }
 
     pub fn get_sui_system_state(&self) -> Result<SuiSystemState, SuiError> {
