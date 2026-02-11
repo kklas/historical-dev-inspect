@@ -4,7 +4,7 @@ use sui_core::authority::authority_store_types::{
 };
 use sui_types::base_types::{FullObjectID, MoveObjectType, ObjectRef, VersionNumber};
 use sui_types::digests::{ObjectDigest, TransactionDigest};
-use sui_types::error::{SuiError, UserInputError};
+use sui_types::error::{SuiError, SuiErrorKind, UserInputError};
 use sui_types::object::{Data, MoveObject, ObjectInner, Owner};
 use sui_types::storage::{FullObjectKey, ObjectKey, ObjectOrTombstone, PackageObject};
 use sui_types::sui_system_state::{get_sui_system_state, SuiSystemState};
@@ -162,7 +162,7 @@ impl HistoricalView {
         if let Some((object_key, StoreObjectWrapper::V1(StoreObjectV1::Value(obj_value)))) =
             obj_res.ok().flatten()
         {
-            Some(try_construct_object(&object_key, obj_value).expect("object construction error"))
+            Some(try_construct_object(&object_key, *obj_value).expect("object construction error"))
         } else {
             None
         }
@@ -174,11 +174,10 @@ impl HistoricalView {
             if obj.is_package() {
                 Ok(Some(PackageObject::new(obj)))
             } else {
-                Err(SuiError::UserInputError {
-                    error: UserInputError::MoveObjectAsPackage {
-                        object_id: *package_id,
-                    },
-                })
+                Err(UserInputError::MoveObjectAsPackage {
+                    object_id: *package_id,
+                }
+                .into())
             }
         } else {
             Ok(None)
@@ -195,7 +194,7 @@ impl HistoricalView {
             StoreObject::Value(obj_value) => Some((
                 obj_key,
                 ObjectOrTombstone::Object(
-                    try_construct_object(&obj_key, obj_value.clone())
+                    try_construct_object(&obj_key, *obj_value.clone())
                         .expect("object construction error"),
                 ),
             )),
@@ -260,7 +259,7 @@ impl HistoricalView {
             .expect("db error")
             .and_then(|wrapper| match wrapper {
                 StoreObjectWrapper::V1(StoreObjectV1::Value(obj_value)) => Some(
-                    try_construct_object(&ObjectKey(*object_id, version), obj_value)
+                    try_construct_object(&ObjectKey(*object_id, version), *obj_value)
                         .expect("object construction error"),
                 ),
                 _ => None,
@@ -298,12 +297,11 @@ impl HistoricalView {
     fn get_live_objref(&self, object_id: ObjectID) -> SuiResult<ObjectRef> {
         match self.get_object(&object_id) {
             Some(obj) => Ok(obj.compute_object_reference()),
-            None => Err(SuiError::UserInputError {
-                error: UserInputError::ObjectNotFound {
-                    object_id,
-                    version: None,
-                },
-            }),
+            None => Err(UserInputError::ObjectNotFound {
+                object_id,
+                version: None,
+            }
+            .into()),
         }
     }
 
@@ -325,7 +323,7 @@ impl HistoricalView {
             match object_opt {
                 None => {
                     let live_objref = self.get_live_objref(object_ref.0)?;
-                    let error = if live_objref.1 >= object_ref.1 {
+                    let error: UserInputError = if live_objref.1 >= object_ref.1 {
                         UserInputError::ObjectVersionUnavailableForConsumption {
                             provided_obj_ref: *object_ref,
                             current_version: live_objref.1,
@@ -336,7 +334,7 @@ impl HistoricalView {
                             version: Some(object_ref.1),
                         }
                     };
-                    return Err(SuiError::UserInputError { error });
+                    return Err(error.into());
                 }
                 Some(object) => {
                     result.push(object);
@@ -369,7 +367,9 @@ impl ChildObjectResolver for HistoricalView {
         let max_version_at_point = self
             .db
             .get_highest_object_version_lte_tx(*child, checkpoint_seq_num, tx_seq_num)
-            .map_err(|e| SuiError::Storage(e.to_string()))?;
+            .map_err(|e| SuiError::from(SuiErrorKind::BadObjectType {
+                error: e.to_string(),
+            }))?;
 
         if max_version_at_point.is_none() {
             return Ok(None);
@@ -380,10 +380,12 @@ impl ChildObjectResolver for HistoricalView {
         let child_object = self
             .db
             .get_object_lt_or_eq_version(*child, max_version)
-            .map_err(|e| SuiError::Storage(e.to_string()))?
+            .map_err(|e| SuiError::from(SuiErrorKind::BadObjectType {
+                error: e.to_string(),
+            }))?
             .and_then(|wrapper| match wrapper {
                 StoreObjectWrapper::V1(StoreObjectV1::Value(obj_value)) => Some(
-                    try_construct_object(&ObjectKey(*child, max_version), obj_value)
+                    try_construct_object(&ObjectKey(*child, max_version), *obj_value)
                         .expect("object construction error"),
                 ),
                 _ => None,
@@ -395,11 +397,11 @@ impl ChildObjectResolver for HistoricalView {
 
         let parent = *parent;
         if child_object.owner != Owner::ObjectOwner(parent.into()) {
-            return Err(SuiError::InvalidChildObjectAccess {
+            return Err(SuiError::from(SuiErrorKind::InvalidChildObjectAccess {
                 object: *child,
                 given_parent: parent,
                 actual_owner: child_object.owner.clone(),
-            });
+            }));
         }
         Ok(Some(child_object))
     }
@@ -478,9 +480,9 @@ pub fn try_construct_object(
             )?)
         },
         _ => {
-            return Err(SuiError::Storage(
-                "corrupted field: inconsistent object representation".to_string(),
-            ))
+            return Err(SuiError::from(SuiErrorKind::BadObjectType {
+                error: "corrupted field: inconsistent object representation".to_string(),
+            }))
         }
     };
 

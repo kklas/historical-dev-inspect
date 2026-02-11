@@ -9,9 +9,7 @@ use axum::{
     Json, Router,
 };
 use fastcrypto::encoding::Base64;
-use jsonrpsee_types::ErrorObjectOwned;
 use serde::{Deserialize, Serialize};
-use sui_json_rpc::error::Error as SuiRpcError;
 use sui_json_rpc_types::DevInspectResults;
 use sui_protocol_config::{Chain, ProtocolConfig};
 use sui_types::{
@@ -62,32 +60,23 @@ pub struct HistoricalDevInspectRequest {
 pub enum ApiError {
     #[error("invalid input: {0}")]
     BadRequest(String),
-    #[error("sui error: {0}")]
-    SuiRpcError(#[from] SuiRpcError),
+    #[error("bcs error: {0}")]
+    BcsError(#[from] bcs::Error),
     #[error("sui error: {0}")]
     SuiError(#[from] SuiError),
     #[error("db error: {0}")]
     DbError(#[from] HistoricalDbError),
     #[error("store error: {0}")]
     StoreError(#[from] StoreError),
+    #[error("execution error: {0}")]
+    ExecutionError(#[from] anyhow::Error),
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response<Body> {
         match self {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
-            ApiError::SuiRpcError(e) => {
-                let err = ErrorObjectOwned::from(e);
-                let status = match err.code() {
-                    jsonrpsee_types::error::INVALID_PARAMS_CODE => StatusCode::BAD_REQUEST,
-                    jsonrpsee_types::error::INTERNAL_ERROR_CODE => {
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    }
-                    _ => StatusCode::INTERNAL_SERVER_ERROR,
-                };
-
-                (status, err.message().to_string()).into_response()
-            }
+            ApiError::BcsError(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
             ApiError::DbError(e) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
@@ -95,6 +84,9 @@ impl IntoResponse for ApiError {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
             ApiError::StoreError(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+            ApiError::ExecutionError(e) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            }
         }
     }
 }
@@ -129,8 +121,7 @@ fn handle_historical_dev_inspect(
             .tx_bytes
             .to_vec()
             .map_err(|e| ApiError::BadRequest(e.to_string()))?,
-    )
-    .map_err(|e| ApiError::SuiRpcError(e.into()))?;
+    )?;
 
     let historical_point = match data.execution_point {
         ExecutionPoint::Checkpoint {
@@ -163,11 +154,10 @@ fn handle_historical_dev_inspect(
         data.sender_address,
         EpochInfo::from(&system_state),
         &protocol_config,
-    )
-    .map_err(|e| ApiError::SuiRpcError(e.into()))?;
+    )?;
 
     let silent = true;
-    let executor = sui_execution::executor(&protocol_config, silent, None)
+    let executor = sui_execution::executor(&protocol_config, silent)
         .expect("Creating an executor should not fail here");
 
     let mut layout_resolver =

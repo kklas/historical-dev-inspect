@@ -10,7 +10,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use object_store::path::Path;
 use object_store::{DynObjectStore, ObjectStore};
 use sui_config::object_storage_config::{ObjectStoreConfig, ObjectStoreType};
-use sui_indexer_alt_framework::task::TrySpawnStreamExt;
+use sui_futures::stream::TrySpawnStreamExt;
 use sui_snapshot::reader::LiveObjectIter;
 use sui_snapshot::{FileMetadata, FileType, Manifest};
 use sui_storage::blob::Blob;

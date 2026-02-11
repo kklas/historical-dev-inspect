@@ -223,7 +223,7 @@ impl HistoricalDb {
     pub fn set_base_epoch(&self, epoch: u64) -> Result<(), HistoricalDbError> {
         let cf = self.db.cf_handle(HistoricalDbCf::Meta.name()).unwrap();
         self.db
-            .put_cf(&cf, b"base_epoch", &epoch.to_be_bytes())
+            .put_cf(&cf, b"base_epoch", epoch.to_be_bytes())
             .map_err(HistoricalDbError::from)
     }
 

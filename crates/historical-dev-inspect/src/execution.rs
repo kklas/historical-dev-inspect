@@ -1,9 +1,7 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use shared_crypto::intent::{AppId, Intent, IntentMessage, IntentScope, IntentVersion};
-use sui_graphql_client::query_types::Epoch;
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{
     base_types::SuiAddress,
@@ -33,27 +31,6 @@ pub struct EpochInfo {
     pub epoch_id: u64,
     pub start_timestamp_ms: u64,
     pub reference_gas_price: u64,
-}
-
-impl TryFrom<&Epoch> for EpochInfo {
-    type Error = anyhow::Error;
-
-    fn try_from(epoch: &Epoch) -> Result<Self, Self::Error> {
-        Ok(EpochInfo {
-            epoch_id: epoch.epoch_id,
-            start_timestamp_ms: epoch
-                .start_timestamp
-                .0
-                .parse::<DateTime<Utc>>()
-                .expect("Failed to parse timestamp")
-                .timestamp_millis() as u64,
-            reference_gas_price: epoch
-                .reference_gas_price
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("Reference gas price not available for epoch"))?
-                .try_into()?,
-        })
-    }
 }
 
 impl From<&SuiSystemState> for EpochInfo {
@@ -143,12 +120,11 @@ pub fn dev_inspect_transaction(
     )?;
 
     let silent = true;
-    let enable_profiler = None;
-    let executor = sui_execution::executor(protocol_config, silent, enable_profiler)
+    let executor = sui_execution::executor(protocol_config, silent)
         .expect("Creating an executor should not fail here");
 
     let enable_expensive_checks = false;
-    let certificate_deny_set = HashSet::new();
+    let execution_params = Ok(());
     let epoch_id = EpochId::from(epoch_info.epoch_id);
     let epoch_timestamp_ms = epoch_info.start_timestamp_ms;
     let skip_all_checks = true;
@@ -158,7 +134,7 @@ pub fn dev_inspect_transaction(
         protocol_config,
         metrics,
         enable_expensive_checks,
-        &certificate_deny_set,
+        execution_params,
         &epoch_id,
         epoch_timestamp_ms,
         checked_input_objects,
