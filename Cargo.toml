@@ -47,6 +47,8 @@ axum = { version = "0.8", default-features = false, features = [
 ] }
 prometheus = "0.13.3"
 chrono = { version = "0.4.39", features = ["clock", "serde"] }
+reqwest = "0.12"
+lru = "0.12"
 rocksdb = { version = "0.22.0", features = ["zstd"] }
 indicatif = "0.18.3"
 byteorder = "1.4.3"

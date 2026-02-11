@@ -27,6 +27,8 @@ use thiserror::Error;
 use crate::{
     db::{HistoricalDb, HistoricalDbError},
     execution::{dev_inspect_transaction, EpochInfo},
+    graphql::GraphqlClient,
+    graphql_store::GraphqlView,
     store::{HistoricalPoint, HistoricalView, StoreError},
 };
 
@@ -150,6 +152,73 @@ fn handle_historical_dev_inspect(
 
     run_dev_inspect(store, &transaction_kind, data.sender_address)
 }
+
+// --- GraphQL-backed mode ---
+
+#[derive(Clone)]
+pub struct GraphqlAppState {
+    pub client: Arc<GraphqlClient>,
+}
+
+pub fn create_graphql_router() -> Router<GraphqlAppState> {
+    Router::new().route(
+        "/historical_devInspectTransactionBlock",
+        post(historical_dev_inspect_graphql_handler),
+    )
+}
+
+pub async fn historical_dev_inspect_graphql_handler(
+    State(state): State<GraphqlAppState>,
+    Json(data): Json<HistoricalDevInspectRequest>,
+) -> Response<Body> {
+    handle_historical_dev_inspect_graphql(state.client.clone(), data)
+        .map(IntoResponse::into_response)
+        .unwrap_or_else(IntoResponse::into_response)
+}
+
+fn handle_historical_dev_inspect_graphql(
+    client: Arc<GraphqlClient>,
+    data: HistoricalDevInspectRequest,
+) -> Result<Json<DevInspectResults>, ApiError> {
+    let transaction_kind: TransactionKind = bcs::from_bytes(
+        &data
+            .tx_bytes
+            .to_vec()
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?,
+    )?;
+
+    let checkpoint = match data.execution_point {
+        ExecutionPoint::Checkpoint {
+            checkpoint_sequence_number,
+            position,
+        } => match position {
+            // State before checkpoint N = state at end of checkpoint N-1
+            Position::Before => {
+                if checkpoint_sequence_number == 0 {
+                    return Err(ApiError::BadRequest(
+                        "cannot query state before checkpoint 0".into(),
+                    ));
+                }
+                checkpoint_sequence_number - 1
+            }
+            // State after checkpoint N = state at end of checkpoint N
+            Position::After => checkpoint_sequence_number,
+        },
+        ExecutionPoint::Transaction { .. } => {
+            return Err(ApiError::BadRequest(
+                "transaction-level granularity is not supported in GraphQL mode; \
+                 use checkpoint-level execution points instead"
+                    .into(),
+            ));
+        }
+    };
+
+    let store = GraphqlView::new(client, checkpoint);
+
+    run_dev_inspect(store, &transaction_kind, data.sender_address)
+}
+
+// --- Shared execution logic ---
 
 pub fn run_dev_inspect<S>(
     store: S,

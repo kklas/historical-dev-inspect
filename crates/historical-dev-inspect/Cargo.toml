@@ -20,6 +20,9 @@ indicatif.workspace = true
 byteorder.workspace = true
 fastcrypto.workspace = true
 axum.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde_json.workspace = true
+lru.workspace = true
 
 # Sui deps
 sui-config.workspace = true

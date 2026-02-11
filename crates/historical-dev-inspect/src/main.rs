@@ -1,10 +1,12 @@
+pub mod checkpoint_store;
 pub mod db;
 pub mod execution;
+pub mod graphql;
+pub mod graphql_store;
 pub mod init;
 pub mod rpc;
 pub mod store;
 pub mod transaction_input_loader;
-pub mod checkpoint_store;
 
 use clap::{Parser, Subcommand};
 use init::{initialize_base_object_set_from_snapshot, load_checkpoints_into_db};
@@ -14,6 +16,7 @@ use sui_config::object_storage_config::{ObjectStoreConfig, ObjectStoreType};
 use sui_data_ingestion_core::create_remote_store_client;
 
 use crate::db::HistoricalDb;
+use crate::graphql::GraphqlClient;
 use crate::init::download_formal_snapshot;
 
 #[derive(Parser, Debug)]
@@ -32,6 +35,18 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "8000")]
         port: u16,
+    },
+    /// Start the RPC server backed by Sui GraphQL API (no local DB needed)
+    StartRpcGraphql {
+        /// Sui GraphQL API URL
+        #[arg(short, long, default_value = "https://graphql.mainnet.sui.io/graphql")]
+        graphql_url: String,
+        /// Port to listen on
+        #[arg(short, long, default_value = "8000")]
+        port: u16,
+        /// LRU cache capacity (number of objects)
+        #[arg(short, long, default_value = "50000")]
+        cache_capacity: usize,
     },
     /// Initialize the database
     InitializeDb {
@@ -81,6 +96,28 @@ async fn main() -> Result<(), anyhow::Error> {
             let app = rpc::create_router().with_state(state);
 
             println!("Server is listening on {}", app_url);
+            axum::serve(listener, app).await.unwrap();
+
+            Ok(())
+        }
+        Commands::StartRpcGraphql {
+            graphql_url,
+            port,
+            cache_capacity,
+        } => {
+            let app_url = format!("0.0.0.0:{}", port);
+
+            let client = Arc::new(GraphqlClient::new(graphql_url.clone(), cache_capacity));
+            let state = rpc::GraphqlAppState { client };
+
+            let listener = tokio::net::TcpListener::bind(&app_url).await.unwrap();
+
+            let app = rpc::create_graphql_router().with_state(state);
+
+            println!(
+                "Server is listening on {} (GraphQL backend: {})",
+                app_url, graphql_url
+            );
             axum::serve(listener, app).await.unwrap();
 
             Ok(())
