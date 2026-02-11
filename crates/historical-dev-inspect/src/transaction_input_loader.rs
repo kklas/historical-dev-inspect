@@ -1,11 +1,10 @@
 use sui_types::{
-    base_types::{FullObjectID, ObjectRef},
+    base_types::ObjectRef,
     committee::EpochId,
     error::{SuiError, SuiResult, UserInputError},
-    storage::FullObjectKey,
     transaction::{
         InputObjectKind, InputObjects, ObjectReadResult, ObjectReadResultKind,
-        ReceivingObjectReadResult, ReceivingObjectReadResultKind, ReceivingObjects,
+        ReceivingObjectReadResult, ReceivingObjects,
     },
 };
 
@@ -91,24 +90,16 @@ pub fn read_objects_for_signing(
 pub fn read_receiving_objects_for_signing(
     store: &HistoricalView,
     receiving_objects: &[ObjectRef],
-    epoch_id: EpochId,
+    _epoch_id: EpochId,
 ) -> SuiResult<ReceivingObjects> {
     let mut receiving_results = Vec::with_capacity(receiving_objects.len());
     for objref in receiving_objects {
         // Note: the digest is checked later in check_transaction_input
         let (object_id, version, _) = objref;
 
-        // TODO: Add support for receiving ConsensusV2 objects. For now this assumes fastpath.
-        if store.have_received_object_at_version(
-            FullObjectKey::new(FullObjectID::new(*object_id, None), *version),
-            epoch_id,
-        ) {
-            receiving_results.push(ReceivingObjectReadResult::new(
-                *objref,
-                ReceivingObjectReadResultKind::PreviouslyReceivedObject,
-            ));
-            continue;
-        }
+        // For dev-inspect, we always return false for have_received_object_at_version.
+        // This is safe because it only affects double-receive detection which doesn't
+        // matter in simulation.
 
         let Some(object) = store.get_object(object_id) else {
             return Err(UserInputError::ObjectNotFound {
